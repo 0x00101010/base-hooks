@@ -1,5 +1,8 @@
 use core::time::Duration;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use super::{config::FlashblocksConfig, wspub::WebSocketPublisher};
 use crate::{
@@ -135,10 +138,15 @@ where
         best_payload: BlockCell<OpBuiltPayload>,
     ) -> Result<(), PayloadBuilderError> {
         let block_build_start_time = Instant::now();
+        let current_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let BuildArguments { config, cancel, .. } = args;
 
         let chain_spec = self.client.chain_spec();
         let timestamp = config.attributes.timestamp();
+        let is_doing_historical_sync = timestamp < current_timestamp;
         let block_env_attributes = OpNextBlockEnvAttributes {
             timestamp,
             suggested_fee_recipient: config.attributes.suggested_fee_recipient(),
@@ -206,9 +214,11 @@ where
         let (payload, fb_payload, mut bundle_state) = build_block(db, &ctx, &mut info)?;
 
         best_payload.set(payload.clone());
-        self.ws_pub
-            .publish(&fb_payload)
-            .map_err(PayloadBuilderError::other)?;
+        if !is_doing_historical_sync {
+            self.ws_pub
+                .publish(&fb_payload)
+                .map_err(PayloadBuilderError::other)?;
+        }
 
         tracing::info!(target: "payload_builder", "Fallback block built");
         ctx.metrics
