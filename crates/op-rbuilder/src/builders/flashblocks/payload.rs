@@ -147,6 +147,11 @@ where
         let chain_spec = self.client.chain_spec();
         let timestamp = config.attributes.timestamp();
         let is_doing_historical_sync = timestamp < current_timestamp;
+        let calculate_state_root = if is_doing_historical_sync {
+            true
+        } else {
+            self.config.specific.calculate_state_root
+        };
         let block_env_attributes = OpNextBlockEnvAttributes {
             timestamp,
             suggested_fee_recipient: config.attributes.suggested_fee_recipient(),
@@ -211,12 +216,8 @@ where
             .sequencer_tx_duration
             .record(sequencer_tx_start_time.elapsed());
 
-        let (payload, fb_payload, mut bundle_state) = build_block(
-            db,
-            &ctx,
-            &mut info,
-            self.config.specific.calculate_state_root,
-        )?;
+        let (payload, fb_payload, mut bundle_state) =
+            build_block(db, &ctx, &mut info, calculate_state_root)?;
 
         best_payload.set(payload.clone());
         if !is_doing_historical_sync {
@@ -389,12 +390,7 @@ where
                     });
 
                     let total_block_built_duration = Instant::now();
-                    let build_result = build_block(
-                        db,
-                        &ctx,
-                        &mut info,
-                        self.config.specific.calculate_state_root,
-                    );
+                    let build_result = build_block(db, &ctx, &mut info, calculate_state_root);
                     ctx.metrics
                         .total_block_built_duration
                         .record(total_block_built_duration.elapsed());
