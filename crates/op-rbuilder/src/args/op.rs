@@ -105,7 +105,7 @@ pub struct FlashblocksArgs {
     #[arg(
         long = "flashblocks.block-overhead",
         default_value = "100",
-        env = "FLASHBLOCKS_BLOCK_OVERHEAD"
+        env = "FLASHBLOCK_BLOCK_OVERHEAD"
     )]
     pub flashblocks_block_overhead: u64,
 
