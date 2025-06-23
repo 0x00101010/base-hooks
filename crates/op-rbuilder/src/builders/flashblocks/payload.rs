@@ -1,5 +1,8 @@
 use core::time::Duration;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use super::{config::FlashblocksConfig, wspub::WebSocketPublisher};
 use crate::{
@@ -135,10 +138,20 @@ where
         best_payload: BlockCell<OpBuiltPayload>,
     ) -> Result<(), PayloadBuilderError> {
         let block_build_start_time = Instant::now();
+        let current_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let BuildArguments { config, cancel, .. } = args;
 
         let chain_spec = self.client.chain_spec();
         let timestamp = config.attributes.timestamp();
+        let is_doing_historical_sync = timestamp < current_timestamp;
+        let calculate_state_root = if is_doing_historical_sync {
+            true
+        } else {
+            self.config.specific.calculate_state_root
+        };
         let block_env_attributes = OpNextBlockEnvAttributes {
             timestamp,
             suggested_fee_recipient: config.attributes.suggested_fee_recipient(),
@@ -203,12 +216,15 @@ where
             .sequencer_tx_duration
             .record(sequencer_tx_start_time.elapsed());
 
-        let (payload, fb_payload, mut bundle_state) = build_block(db, &ctx, &mut info)?;
+        let (payload, fb_payload, mut bundle_state) =
+            build_block(db, &ctx, &mut info, calculate_state_root)?;
 
         best_payload.set(payload.clone());
-        self.ws_pub
-            .publish(&fb_payload)
-            .map_err(PayloadBuilderError::other)?;
+        if !is_doing_historical_sync {
+            self.ws_pub
+                .publish(&fb_payload)
+                .map_err(PayloadBuilderError::other)?;
+        }
 
         tracing::info!(target: "payload_builder", "Fallback block built");
         ctx.metrics
@@ -374,7 +390,7 @@ where
                     });
 
                     let total_block_built_duration = Instant::now();
-                    let build_result = build_block(db, &ctx, &mut info);
+                    let build_result = build_block(db, &ctx, &mut info, calculate_state_root);
                     ctx.metrics
                         .total_block_built_duration
                         .record(total_block_built_duration.elapsed());
@@ -483,6 +499,7 @@ fn build_block<DB, P>(
     mut state: State<DB>,
     ctx: &OpPayloadBuilderCtx,
     info: &mut ExecutionInfo<ExtraExecutionInfo>,
+    calculate_state_root: bool,
 ) -> Result<(OpBuiltPayload, FlashblocksPayloadV1, BundleState), PayloadBuilderError>
 where
     DB: Database<Error = ProviderError> + AsRef<P>,
@@ -524,21 +541,25 @@ where
 
     // // calculate the state root
     let state_root_start_time = Instant::now();
-    let state_provider = state.database.as_ref();
-    let hashed_state = state_provider.hashed_post_state(execution_outcome.state());
-    let (state_root, _trie_output) = {
-        state
-            .database
-            .as_ref()
-            .state_root_with_updates(hashed_state.clone())
-            .inspect_err(|err| {
-                warn!(target: "payload_builder",
-                parent_header=%ctx.parent().hash(),
-                    %err,
-                    "failed to calculate state root for payload"
-                );
-            })?
-    };
+    let mut state_root = B256::ZERO;
+    if calculate_state_root {
+        let state_provider = state.database.as_ref();
+        let hashed_state = state_provider.hashed_post_state(execution_outcome.state());
+        let (_state_root, _trie_output) = {
+            state
+                .database
+                .as_ref()
+                .state_root_with_updates(hashed_state.clone())
+                .inspect_err(|err| {
+                    warn!(target: "payload_builder",
+                    parent_header=%ctx.parent().hash(),
+                        %err,
+                        "failed to calculate state root for payload"
+                    );
+                })?
+        };
+        state_root = _state_root;
+    }
     ctx.metrics
         .state_root_calculation_duration
         .record(state_root_start_time.elapsed());

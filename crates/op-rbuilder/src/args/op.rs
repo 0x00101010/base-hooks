@@ -108,4 +108,12 @@ pub struct FlashblocksArgs {
         env = "FLASHBLOCK_BLOCK_OVERHEAD"
     )]
     pub flashblocks_block_overhead: u64,
+
+    /// Should we calculate state root for each flashblock
+    #[arg(
+        long = "flashblocks.calculate-state-root",
+        default_value = "true",
+        env = "FLASHBLOCKS_CALCULATE_STATE_ROOT"
+    )]
+    pub flashblocks_calculate_state_root: bool,
 }
