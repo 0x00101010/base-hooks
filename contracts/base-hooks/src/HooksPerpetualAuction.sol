@@ -23,10 +23,42 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  */
 contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
     /**
+     * @notice Comparison operators for advanced filtering
+     */
+    enum ComparisonOp {
+        NONE,    // No filtering on this topic
+        EQ,      // Equal to
+        LT,      // Less than
+        LTE,     // Less than or equal to
+        GT,      // Greater than
+        GTE      // Greater than or equal to
+    }
+
+    /**
+     * @notice Advanced filtering criteria for a single topic
+     */
+    struct TopicFilter {
+        ComparisonOp op;     // Comparison operator to use
+        bytes32 value;       // Value to compare against
+        bool enabled;        // Whether this filter is active
+    }
+
+    /**
+     * @notice Complete filtering configuration for an event
+     */
+    struct EventFilter {
+        TopicFilter topic1;
+        TopicFilter topic2;
+        TopicFilter topic3;
+    }
+
+    /**
      * @notice Represents a hook auction slot with bidder information and execution parameters
-     * @dev Each unique combination of contract address and event topic has its own Hook slot
+     * @dev Each unique combination of contract address, event topic, and filter criteria has its own Hook slot
      */
     struct Hook {
+        /// @notice Event signature (topic0) being monitored
+        bytes32 topic0;
         /// @notice Address of the current highest bidder who owns this hook slot
         address owner;
         /// @notice Contract address that will be called when the hook is executed
@@ -37,10 +69,12 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
         uint256 deposit;
         /// @notice Number of hook executions remaining before deposit is depleted
         uint256 callsRemaining;
+        /// @notice Advanced filtering criteria for topics 1-3 (used by sequencer off-chain)
+        EventFilter filter;
     }
 
-    /// @notice Mapping from contract address => event topic => Hook data
-    /// @dev Allows multiple hooks per contract, one per unique event signature
+    /// @notice Mapping from contract address => filter hash => Hook data
+    /// @dev Filter hash is derived from topic0 + filter criteria, allowing multiple hooks per contract+topic0
     mapping(address => mapping(bytes32 => Hook)) public hooks;
     
     /// @notice Total amount of ETH reserved for hook deposits across all active auctions
@@ -67,15 +101,18 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
         address indexed contractAddr,
         bytes32 indexed topic0,
         address indexed bidder,
+        bytes32 filterHash,
         address entrypoint,
         uint256 feePerCall,
-        uint256 callsDeposited
+        uint256 callsDeposited,
+        EventFilter filter
     );
 
     event HookExecuted(
         address indexed contractAddr,
         bytes32 indexed topic0,
         address indexed owner,
+        bytes32 filterHash,
         address originator,
         uint256 feePerCall,
         uint256 originatorRefund
@@ -83,7 +120,7 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
 
     event DepositWithdrawn(
         address indexed contractAddr,
-        bytes32 indexed topic0,
+        bytes32 indexed filterHash,
         address indexed owner,
         uint256 amount
     );
@@ -149,6 +186,22 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @notice Generates a unique hash for a hook based on topic0 and filter criteria
+     * @dev This hash is used as the key in the hooks mapping to allow multiple hooks per contract+topic0
+     * @param topic0 The event signature being monitored
+     * @param filter The filtering criteria for topics 1-3
+     * @return bytes32 The generated filter hash
+     */
+    function generateFilterHash(bytes32 topic0, EventFilter memory filter) public pure returns (bytes32) {
+        return keccak256(abi.encode(
+            topic0,
+            filter.topic1.op, filter.topic1.value, filter.topic1.enabled,
+            filter.topic2.op, filter.topic2.value, filter.topic2.enabled,
+            filter.topic3.op, filter.topic3.value, filter.topic3.enabled
+        ));
+    }
+
+    /**
      * @notice Places a bid to win the right to execute hooks for a specific contract event
      * @dev Creates or replaces an existing hook auction. Higher bids automatically refund previous bidders.
      *      The bid amount must be feePerCall * callsToDeposit, with any excess ETH refunded.
@@ -157,25 +210,28 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
      * @param entrypoint The contract address that will be called when the hook executes
      * @param feePerCall Amount of ETH to pay per hook execution (must be higher than current bid)
      * @param callsToDeposit Number of hook executions to fund (minimum 100)
+     * @param filter Advanced filtering criteria for topics 1-3 (used by sequencer for off-chain filtering)
      * 
      * Requirements:
      * - callsToDeposit must be >= MIN_CALLS_DEPOSIT (100)
      * - msg.value must be >= feePerCall * callsToDeposit
-     * - feePerCall must be > current winning bid (if one exists)
+     * - feePerCall must be > current winning bid (if one exists for this exact filter combination)
      * 
      * Effects:
-     * - Refunds previous bidder's entire deposit if outbid
+     * - Refunds previous bidder's entire deposit if outbid (for same filter combination)
      * - Updates totalReservedETH to track new deposit
      * - Refunds any excess ETH sent beyond required deposit
+     * - Stores filter criteria for sequencer to use during off-chain event matching
      * 
-     * Emits: NewBid event with bid details
+     * Emits: NewBid event with bid details and full filter configuration
      */
     function bid(
         address contractAddr,
         bytes32 topic0,
         address entrypoint,
         uint256 feePerCall,
-        uint256 callsToDeposit
+        uint256 callsToDeposit,
+        EventFilter memory filter
     ) external payable nonReentrant {
         if (callsToDeposit < MIN_CALLS_DEPOSIT) {
             revert InvalidCallsAmount();
@@ -186,7 +242,8 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
             revert InsufficientDeposit();
         }
 
-        Hook storage currentSlot = hooks[contractAddr][topic0];
+        bytes32 filterHash = generateFilterHash(topic0, filter);
+        Hook storage currentSlot = hooks[contractAddr][filterHash];
         
         // If slot exists, new bid must be higher than current feePerCall
         if (currentSlot.owner != address(0)) {
@@ -203,12 +260,14 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
         }
 
         // Create new auction slot
-        hooks[contractAddr][topic0] = Hook({
+        hooks[contractAddr][filterHash] = Hook({
+            topic0: topic0,
             owner: msg.sender,
             entrypoint: entrypoint,
             feePerCall: feePerCall,
             deposit: requiredDeposit,
-            callsRemaining: callsToDeposit
+            callsRemaining: callsToDeposit,
+            filter: filter
         });
 
         // Update reserved ETH tracking
@@ -220,7 +279,7 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
             payable(msg.sender).transfer(excess);
         }
 
-        emit NewBid(contractAddr, topic0, msg.sender, entrypoint, feePerCall, callsToDeposit);
+        emit NewBid(contractAddr, topic0, msg.sender, filterHash, entrypoint, feePerCall, callsToDeposit, filter);
     }
 
     /**
@@ -229,6 +288,7 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
      *      The hook execution is gas-limited to prevent DoS attacks. Fees are deducted regardless
      *      of hook execution success to prevent griefing attacks.
      * @param contractAddr The contract address that triggered the event
+     * @param filterHash The specific filter hash to execute (determined by sequencer off-chain)
      * @param topic0 The event signature that was emitted
      * @param topic1 The first indexed event parameter (if any)
      * @param topic2 The second indexed event parameter (if any)
@@ -237,7 +297,7 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
      * @param originator Address of the user who initiated the transaction causing this event
      * 
      * Requirements:
-     * - Hook auction must exist for the given contractAddr/topic0 combination
+     * - Hook must exist for the given contractAddr/filterHash combination
      * - Hook must have callsRemaining > 0
      * 
      * Effects:
@@ -251,6 +311,7 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
      */
     function executeHook(
         address contractAddr,
+        bytes32 filterHash,
         bytes32 topic0,
         bytes32 topic1,
         bytes32 topic2,
@@ -258,7 +319,7 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
         bytes calldata eventData,
         address originator
     ) external nonReentrant {
-        Hook storage slot = hooks[contractAddr][topic0];
+        Hook storage slot = hooks[contractAddr][filterHash];
         
         if (slot.owner == address(0)) {
             revert NoAuctionExists();
@@ -286,20 +347,20 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
         slot.callsRemaining--;
 
         if (slot.callsRemaining == 0) {
-            delete hooks[contractAddr][topic0];
+            delete hooks[contractAddr][filterHash];
         }
 
         totalReservedETH -= slot.feePerCall;
 
-        emit HookExecuted(contractAddr, topic0, slot.owner, originator, slot.feePerCall, originatorRefund);
+        emit HookExecuted(contractAddr, topic0, slot.owner, filterHash, originator, slot.feePerCall, originatorRefund);
     }
 
     /**
      * @notice Allows hook owners to withdraw their remaining deposit and forfeit the auction
      * @dev Completely removes the hook auction and refunds all remaining funds to the owner.
-     *      This effectively ends the auction for this contract/topic combination.
+     *      This effectively ends the auction for this specific hook combination.
      * @param contractAddr The contract address of the hook to withdraw
-     * @param topic0 The event signature of the hook to withdraw
+     * @param filterHash The filter hash identifying the specific hook to withdraw
      * 
      * Requirements:
      * - Only the current hook owner can withdraw
@@ -312,8 +373,8 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
      * 
      * Emits: DepositWithdrawn event with withdrawal details
      */
-    function withdrawDeposit(address contractAddr, bytes32 topic0) external nonReentrant {
-        Hook storage slot = hooks[contractAddr][topic0];
+    function withdrawDeposit(address contractAddr, bytes32 filterHash) external nonReentrant {
+        Hook storage slot = hooks[contractAddr][filterHash];
         
         if (slot.owner != msg.sender) {
             revert OnlyOwnerCanWithdraw();
@@ -324,10 +385,10 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
             slot.deposit = 0;
             slot.callsRemaining = 0;
             totalReservedETH -= withdrawAmount;
-            delete hooks[contractAddr][topic0];
+            delete hooks[contractAddr][filterHash];
             
             payable(msg.sender).transfer(withdrawAmount);
-            emit DepositWithdrawn(contractAddr, topic0, msg.sender, withdrawAmount);
+            emit DepositWithdrawn(contractAddr, filterHash, msg.sender, withdrawAmount);
         }
     }
 
@@ -336,7 +397,7 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
      * @dev Hook owners can deposit additional ETH to extend the duration of their hook execution.
      *      The additional deposit uses the same feePerCall rate as the original bid.
      * @param contractAddr The contract address of the hook to extend
-     * @param topic0 The event signature of the hook to extend
+     * @param filterHash The filter hash identifying the specific hook to extend
      * @param additionalCalls Number of additional hook executions to fund
      * 
      * Requirements:
@@ -349,8 +410,8 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
      * - Increases totalReservedETH by the additional deposit amount
      * - Refunds any excess ETH sent beyond required deposit
      */
-    function addDeposit(address contractAddr, bytes32 topic0, uint256 additionalCalls) external payable nonReentrant {
-        Hook storage slot = hooks[contractAddr][topic0];
+    function addDeposit(address contractAddr, bytes32 filterHash, uint256 additionalCalls) external payable nonReentrant {
+        Hook storage slot = hooks[contractAddr][filterHash];
         
         if (slot.owner != msg.sender) {
             revert OnlyOwnerCanWithdraw();
@@ -411,14 +472,14 @@ contract HooksPerpetualAuction is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Retrieves complete hook information for a specific contract/event combination
+     * @notice Retrieves complete hook information for a specific hook
      * @dev Returns the Hook struct containing all auction details including owner, entrypoint,
-     *      fee structure, deposit amount, and remaining calls.
+     *      fee structure, deposit amount, remaining calls, and filter configuration.
      * @param contractAddr The contract address being monitored
-     * @param topic0 The event signature for the hook
+     * @param filterHash The filter hash identifying the specific hook
      * @return Hook memory struct containing all hook auction details
      */
-    function getHook(address contractAddr, bytes32 topic0) external view returns (Hook memory) {
-        return hooks[contractAddr][topic0];
+    function getHook(address contractAddr, bytes32 filterHash) external view returns (Hook memory) {
+        return hooks[contractAddr][filterHash];
     }
 }
