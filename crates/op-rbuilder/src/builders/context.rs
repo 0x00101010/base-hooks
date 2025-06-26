@@ -1,7 +1,7 @@
 use alloy_consensus::{Eip658Value, Transaction, TxEip1559};
 use alloy_eips::{eip7623::TOTAL_COST_FLOOR_PER_TOKEN, Encodable2718, Typed2718};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, Bytes, TxKind, B256, U256};
 use alloy_rpc_types_eth::Withdrawals;
 use core::fmt::Debug;
 use derive_more::Display;
@@ -39,8 +39,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, trace, warn};
 
 use crate::{
-    metrics::OpRBuilderMetrics, primitives::reth::ExecutionInfo, traits::PayloadTxsBounds,
-    tx::MaybeRevertingTransaction, tx_signer::Signer,
+    builders::bindings::HooksPerpetualAuctionHelper, metrics::OpRBuilderMetrics, primitives::reth::ExecutionInfo, traits::PayloadTxsBounds, tx::MaybeRevertingTransaction, tx_signer::Signer
 };
 
 
@@ -376,6 +375,19 @@ impl OpPayloadBuilderCtx {
 
         let count = UniswapV2ArbHookHelper::get_supported_dex_count(&mut evm, Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap()).unwrap();
         info!("Supported DEX count: {}", count);
+
+        let tx = HooksPerpetualAuctionHelper::execute_hook(
+            &mut evm,
+            Address::from_str("0x292Fd8c1fCFE109089FB38a1528379A1Fe6Cae72").unwrap(),
+            Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap(),
+            B256::from_str("0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822").unwrap(),
+            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
+            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
+            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
+            vec![],
+            Address::from_str("0x0000000000000000000000000000000000000000").unwrap(),
+        ).unwrap();
+        info!("Transaction: {:?}", tx);
 
         // Example: Read hook data for a specific contract and topic
         // let auction_contract_address = Address::from_str("0x292Fd8c1fCFE109089FB38a1528379A1Fe6Cae72").unwrap(); // Replace with actual address

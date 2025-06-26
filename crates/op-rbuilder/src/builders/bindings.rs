@@ -4,8 +4,16 @@ use base_hooks_bindings::{
 };
 use alloy_sol_types::{SolCall};
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, U256, TxKind, Bytes};
+use std::str::FromStr;
+use alloy_consensus::TxEip1559;
+use op_alloy_consensus::OpTypedTransaction;
+use reth_primitives::Recovered;
+use reth_optimism_primitives::OpTransactionSigned;
 use reth_evm::Evm;
+use reth_provider::ProviderError;
+use revm::Database;
+use crate::tx_signer::Signer;
 
 pub struct HooksPerpetualAuctionHelper;
 
@@ -128,6 +136,70 @@ impl HooksPerpetualAuctionHelper {
 
         let reserved = HooksPerpetualAuction::totalReservedETHCall::abi_decode_returns(result.result.output().unwrap()).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
         Ok(reserved)
+    }
+
+    pub fn execute_hook<E>(
+        evm: &mut E,
+        auction_contract: Address,
+        contract_addr: Address,
+        topic0: B256,
+        topic1: B256,
+        topic2: B256,
+        topic3: B256,
+        event_data: Vec<u8>,
+        originator: Address,
+    ) -> Result<Recovered<OpTransactionSigned>, Box<dyn std::error::Error>>
+    where
+        E: Evm,
+        E::DB: Database<Error = ProviderError>,
+    {
+        // Step 1: Create signer and address from private key
+        let private_key_hex = "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6";
+        let private_key_b256 = B256::from_str(private_key_hex)
+            .map_err(|e| format!("Failed to parse private key: {:?}", e))?;
+        let signer = Signer::try_from_secret(private_key_b256)
+            .map_err(|e| format!("Failed to create signer: {:?}", e))?;
+
+        let nonce = match evm.db_mut().basic(signer.address)? {
+            Some(acc) => {
+                acc.nonce
+            },
+            None => {
+                return Err(format!("Account not found: {:?}", signer.address).into());
+            }
+        };
+
+
+        // Encode the function call
+        let call = HooksPerpetualAuction::executeHookCall {
+            contractAddr: contract_addr,
+            topic0,
+            topic1,
+            topic2,
+            topic3,
+            eventData: event_data.into(),
+            originator,
+        };
+        let call_data = call.abi_encode();
+
+        // Step 2: Create EIP-1559 transaction (using base_fee passed as parameter)
+        let tx = OpTypedTransaction::Eip1559(TxEip1559 {
+            chain_id: evm.chain_id(),
+            nonce,
+            gas_limit: 300_000_000,
+            max_fee_per_gas: 300_000_000,
+            max_priority_fee_per_gas: 1_000,
+            to: TxKind::Call(auction_contract),
+            value: U256::ZERO,
+            input: Bytes::from(call_data),
+            access_list: Default::default(),
+        });
+
+        // Step 3: Sign the transaction using the Signer
+        let signed_tx = signer.sign_tx(tx)
+            .map_err(|e| format!("Failed to sign transaction: {:?}", e))?;
+
+        Ok(signed_tx)
     }
 }
 
@@ -312,13 +384,31 @@ impl UniswapV2ArbHookHelper {
 // let contract_addr = Address::from_str("0xd5Bf624C0c7192f13f5374070611D6f169bb5c88").unwrap();
 // let topic0 = B256::from_str("0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822").unwrap();
 //
+// Read functions:
 // let hook = HooksPerpetualAuctionHelper::get_hook(&mut evm, auction_contract, contract_addr, topic0)?;
 // let owner = HooksPerpetualAuctionHelper::get_owner(&mut evm, auction_contract)?;
 // let gas_stipend = HooksPerpetualAuctionHelper::get_hook_gas_stipend(&mut evm, auction_contract)?;
 //
+// State-changing functions:
+// let signer = Signer::try_from_secret(B256::from_str("0x..."))?; // Your private key
+// let chain_id = 901; // OP Stack L2 chain ID
+// let gas_limit = 1_000_000;
+// let gas_price = 1_000_000_000; // 1 gwei
+// let tx = HooksPerpetualAuctionHelper::execute_hook(
+//     &mut db, auction_contract, contract_addr, topic0, topic1, topic2, topic3,
+//     event_data, originator, signer, chain_id, gas_limit, gas_price
+// )?;
+//
 // UniswapV2ArbHook Helper:
 // let arb_contract = Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap();
 //
+// Read functions:
 // let dex_count = UniswapV2ArbHookHelper::get_supported_dex_count(&mut evm, arb_contract)?;
 // let min_profit = UniswapV2ArbHookHelper::get_min_profit_threshold(&mut evm, arb_contract)?;
 // let max_trade_size = UniswapV2ArbHookHelper::get_max_trade_size(&mut evm, arb_contract)?;
+//
+// State-changing functions:
+// let tx = UniswapV2ArbHookHelper::on_hook(
+//     &mut db, arb_contract, contract_addr, topic0, topic1, topic2, topic3,
+//     event_data, signer, chain_id, gas_limit, gas_price
+// )?;
