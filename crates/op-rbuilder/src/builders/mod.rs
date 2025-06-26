@@ -17,6 +17,7 @@ mod context;
 mod flashblocks;
 mod generator;
 mod standard;
+mod bindings;
 
 pub use flashblocks::FlashblocksBuilder;
 pub use standard::StandardBuilder;

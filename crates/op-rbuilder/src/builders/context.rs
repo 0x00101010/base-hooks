@@ -43,6 +43,32 @@ use crate::{
     tx::MaybeRevertingTransaction, tx_signer::Signer,
 };
 
+
+use crate::builders::bindings::UniswapV2ArbHookHelper;
+// load the latest auction contract state
+use alloy_sol_types::{sol, SolCall};
+use std::str::FromStr;
+
+sol! {
+    interface HooksPerpetualAuction {
+        struct Hook {
+            address owner;
+            address entrypoint;
+            uint256 feePerCall;
+            uint256 deposit;
+            uint256 callsRemaining;
+        }
+
+        function hooks(address contractAddr, bytes32 topic0) external view returns (Hook memory);
+    }
+
+    interface UniswapV2ArbHook {
+        // function supportedDEXes(uint256) external view returns (address);
+        // function minProfitThreshold() external view returns (uint256);
+        function getSupportedDEXCount() external view returns (uint256);
+    }
+}
+
 /// Container type that holds all necessities to build a new payload.
 #[derive(Debug)]
 pub struct OpPayloadBuilderCtx {
@@ -347,6 +373,40 @@ impl OpPayloadBuilderCtx {
         let mut evm = self.evm_config.evm_with_env(&mut *db, self.evm_env.clone());
 
         info!(target: "payload_builder", block_da_limit = ?block_da_limit, tx_da_size = ?tx_da_limit, block_gas_limit = ?block_gas_limit, "DA limits");
+
+        let count = UniswapV2ArbHookHelper::get_supported_dex_count(&mut evm, Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap()).unwrap();
+        info!("Supported DEX count: {}", count);
+
+        // Example: Read hook data for a specific contract and topic
+        // let auction_contract_address = Address::from_str("0x292Fd8c1fCFE109089FB38a1528379A1Fe6Cae72").unwrap(); // Replace with actual address
+        // let contract_addr = Address::from_str("0xd5Bf624C0c7192f13f5374070611D6f169bb5c88").unwrap(); // Contract being monitored
+        // let topic0 = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"; // Event topic hash
+
+        // let call_data = HooksPerpetualAuction::hooksCall {
+        //     contractAddr: contract_addr,
+        //     topic0: topic0.parse().unwrap(),
+        // }.abi_encode();
+
+        // match evm.transact_system_call(Address::ZERO, auction_contract_address, call_data.into()) {
+        //     Ok(res) => {
+        //         info!("Transaction successful: {:?}", res);
+        //     }
+        //     Err(err) => {
+        //         info!("Transaction failed: {:?}", err);
+        //     }
+        // }
+
+        let contract_addr = Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap();
+        let call_data = UniswapV2ArbHook::getSupportedDEXCountCall {}.abi_encode();
+
+        match evm.transact_system_call(Address::ZERO, contract_addr, call_data.into()) {
+            Ok(res) => {
+                info!("Transaction successful: {:?}", res.result.output());
+            }
+            Err(err) => {
+                info!("Transaction failed: {:?}", err);
+            }
+        }
 
         // Remove once we merge Reth 1.4.4
         // Fixed in https://github.com/paradigmxyz/reth/pull/16514

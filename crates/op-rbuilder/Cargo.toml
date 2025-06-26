@@ -90,6 +90,7 @@ thiserror.workspace = true
 parking_lot.workspace = true
 url.workspace = true
 
+base-hooks-bindings = { path = "../base-hooks-bindings" }
 tower = "0.5"
 futures = "0.3"
 futures-util = "0.3.31"
@@ -105,6 +106,7 @@ moka = "0.12"
 
 # `msozin/flashblocks-v1.4.1` branch based on `flashblocks-rebase`
 rollup-boost = { git = "http://github.com/flashbots/rollup-boost", rev = "8506dfb7d84c65746f7c88d250983658438f59e8" }
+alloy-sol-types.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 tikv-jemallocator = { version = "0.6", optional = true }
@@ -115,22 +117,22 @@ vergen-git2.workspace = true
 
 [dev-dependencies]
 alloy-provider = { workspace = true, default-features = true, features = [
-	"txpool-api",
+    "txpool-api",
 ] }
 
 [features]
 default = ["jemalloc"]
 
 jemalloc = [
-	"dep:tikv-jemallocator",
-	"reth-cli-util/jemalloc",
-	"reth-optimism-cli/jemalloc",
+    "dep:tikv-jemallocator",
+    "reth-cli-util/jemalloc",
+    "reth-optimism-cli/jemalloc",
 ]
 jemalloc-prof = [
-	"jemalloc",
-	"tikv-jemallocator?/profiling",
-	"reth/jemalloc-prof",
-	"reth-cli-util/jemalloc-prof",
+    "jemalloc",
+    "tikv-jemallocator?/profiling",
+    "reth/jemalloc-prof",
+    "reth-cli-util/jemalloc-prof",
 ]
 
 min-error-logs = ["tracing/release_max_level_error"]
