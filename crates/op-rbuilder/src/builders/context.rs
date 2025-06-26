@@ -373,52 +373,32 @@ impl OpPayloadBuilderCtx {
 
         info!(target: "payload_builder", block_da_limit = ?block_da_limit, tx_da_size = ?tx_da_limit, block_gas_limit = ?block_gas_limit, "DA limits");
 
-        let count = UniswapV2ArbHookHelper::get_supported_dex_count(&mut evm, Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap()).unwrap();
-        info!("Supported DEX count: {}", count);
+        // let count = UniswapV2ArbHookHelper::get_supported_dex_count(&mut evm, Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap()).unwrap();
+        // info!("Supported DEX count: {}", count);
 
-        let tx = HooksPerpetualAuctionHelper::execute_hook(
-            &mut evm,
-            Address::from_str("0x292Fd8c1fCFE109089FB38a1528379A1Fe6Cae72").unwrap(),
-            Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap(),
-            B256::from_str("0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822").unwrap(),
-            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
-            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
-            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
-            vec![],
-            Address::from_str("0x0000000000000000000000000000000000000000").unwrap(),
-        ).unwrap();
-        info!("Transaction: {:?}", tx);
+        let auction_contract = Address::from_str("0x292Fd8c1fCFE109089FB38a1528379A1Fe6Cae72").unwrap();
+        let pair1_contract = Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap();
+        let pair1_contract_swap_topic = B256::from_str("0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822").unwrap();
+        // let tx = HooksPerpetualAuctionHelper::execute_hook(
+        //     &mut evm,
+        //     auction_contract,
+        //     pair1_contract,
+        //     pair1_contract_swap_topic,
+        //     pair1_contract_swap_topic,
+        //     pair1_contract_swap_topic,
+        //     pair1_contract_swap_topic,
+        //     vec![],
+        //     Address::from_str("0x0000000000000000000000000000000000000000").unwrap(),
+        // ).unwrap();
+        // info!("Transaction: {:?}", tx);
 
-        // Example: Read hook data for a specific contract and topic
-        // let auction_contract_address = Address::from_str("0x292Fd8c1fCFE109089FB38a1528379A1Fe6Cae72").unwrap(); // Replace with actual address
-        // let contract_addr = Address::from_str("0xd5Bf624C0c7192f13f5374070611D6f169bb5c88").unwrap(); // Contract being monitored
-        // let topic0 = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"; // Event topic hash
-
-        // let call_data = HooksPerpetualAuction::hooksCall {
-        //     contractAddr: contract_addr,
-        //     topic0: topic0.parse().unwrap(),
-        // }.abi_encode();
-
-        // match evm.transact_system_call(Address::ZERO, auction_contract_address, call_data.into()) {
-        //     Ok(res) => {
-        //         info!("Transaction successful: {:?}", res);
-        //     }
-        //     Err(err) => {
-        //         info!("Transaction failed: {:?}", err);
-        //     }
-        // }
-
-        let contract_addr = Address::from_str("0x29a79095352a718B3D7Fe84E1F14E9F34A35598e").unwrap();
-        let call_data = UniswapV2ArbHook::getSupportedDEXCountCall {}.abi_encode();
-
-        match evm.transact_system_call(Address::ZERO, contract_addr, call_data.into()) {
-            Ok(res) => {
-                info!("Transaction successful: {:?}", res.result.output());
-            }
-            Err(err) => {
-                info!("Transaction failed: {:?}", err);
-            }
-        }
+        // let hook = HooksPerpetualAuctionHelper::get_hook(
+        //     &mut evm,
+        //     auction_contract,
+        //     pair1_contract,
+        //     pair1_contract_swap_topic,
+        // ).unwrap();
+        // info!("Hook: {:?}", hook);
 
         // Remove once we merge Reth 1.4.4
         // Fixed in https://github.com/paradigmxyz/reth/pull/16514
@@ -506,6 +486,18 @@ impl OpPayloadBuilderCtx {
                     return Err(PayloadBuilderError::EvmExecutionError(Box::new(err)));
                 }
             };
+
+            result.logs().iter().for_each(|log| {
+                if log.address == pair1_contract && log.topics()[0] == pair1_contract_swap_topic {
+                    let hook = HooksPerpetualAuctionHelper::get_hook(
+                        &mut evm,
+                        auction_contract,
+                        pair1_contract,
+                        pair1_contract_swap_topic,
+                    ).unwrap();
+                    info!("Hook: {:?}", hook);
+                }
+            });
 
             self.metrics
                 .tx_simulation_duration
